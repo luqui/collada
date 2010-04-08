@@ -20,6 +20,8 @@ data Object
     | OSource Accessor
     | OVertices [Input]
     | OGeometry Mesh
+    | OImage FilePath
+    | OParam Parameter
     deriving Show
 
 data Accessor
@@ -44,6 +46,11 @@ data Primitive
 data Mesh = Mesh [Primitive]
     deriving Show
 
+data Parameter
+    = ParamSurface2D ID
+    | ParamSampler2D ID
+    deriving Show
+
 main = putStrLn . intercalate ("\n------------------\n") . map show . LA.runLA (mainA . X.parseXmlDoc) =<< fmap ((,) "<stdin>") getContents
 
 --mainA :: LA.LA X.XmlTree Dict
@@ -52,12 +59,15 @@ mainA = (Map.unions .< X.multi objects) <<< X.hasName "COLLADA"
 infixr 1 .<
 (.<) = flip (X.>.)
 
-objects = asum [ float_array, source, vertices, geometry ]
+objects = asum [ float_array, source, vertices, geometry, image, newparam ]
 
 asum = foldr1 (X.<+>)
 
+objectWithIDAttr :: String -> String -> LA.LA X.XmlTree Object -> LA.LA X.XmlTree Dict
+objectWithIDAttr attr name proc = uncurry Map.singleton ^<< (X.getAttrValue0 attr &&& proc) . X.hasName name
+
 object :: String -> LA.LA X.XmlTree Object -> LA.LA X.XmlTree Dict
-object name proc = uncurry Map.singleton ^<< (X.getAttrValue0 "id" &&& proc) . X.hasName name
+object = objectWithIDAttr "id"
 
 float_array :: LA.LA X.XmlTree Dict
 float_array = object "float_array" $ toArray ^<< X.getText . X.getChildren
@@ -86,7 +96,7 @@ input = massage ^<< X.getAttrValue "offset" &&& X.getAttrValue0 "semantic" &&& X
     massageSemantic s = error $ "Unknown semantic: " ++ s
 
 vertices :: LA.LA X.XmlTree Dict
-vertices = object "vertices" $ OVertices . fixups .< input <<< X.getChildren
+vertices = object "vertices" $ OVertices . fixups .< (input <<< X.getChildren)
     where
     fixups = zipWith fixup [0..]
     fixup n (Input z sem source) | z == -1 = Input n sem source
@@ -96,13 +106,22 @@ vertices = object "vertices" $ OVertices . fixups .< input <<< X.getChildren
 triangles :: LA.LA X.XmlTree Primitive
 triangles = massage ^<< X.getAttrValue "material" &&& procBody <<< X.hasName "triangles"
     where
-    procBody = (id .< input <<< X.getChildren) &&& (map read . words ^<< X.getText <<< X.getChildren <<< X.hasName "p" <<< X.getChildren)
+    procBody = (id .< (input <<< X.getChildren)) &&& (map read . words ^<< X.getText <<< X.getChildren <<< X.hasName "p" <<< X.getChildren)
     massage (material, (inputs, p)) = PrimTriangles material inputs p
 
 mesh :: LA.LA X.XmlTree Mesh
-mesh = (Mesh .< primitives <<< X.getChildren) <<< X.hasName "mesh"
+mesh = (Mesh .< (primitives <<< X.getChildren)) <<< X.hasName "mesh"
     where
     primitives = asum [ triangles ]
 
 geometry :: LA.LA X.XmlTree Dict
 geometry = object "geometry" $ OGeometry ^<< mesh <<< X.getChildren
+
+image :: LA.LA X.XmlTree Dict
+image = object "image" $ OImage ^<< X.getText <<< X.getChildren <<< X.hasName "init_from" <<< X.getChildren
+
+newparam :: LA.LA X.XmlTree Dict
+newparam = objectWithIDAttr "sid" "newparam" $ OParam ^<< asum [surface, sampler2D] <<< X.getChildren
+    where
+    surface = ParamSurface2D ^<< X.getText <<< X.getChildren <<< X.hasName "init_from" <<< X.hasAttrValue "type" (== "2D") <<< X.hasName "surface"
+    sampler2D = ParamSampler2D ^<< X.getText <<< X.getChildren <<< X.hasName "source" <<< X.getChildren <<< X.hasName "sampler2D"
