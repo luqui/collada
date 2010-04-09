@@ -60,7 +60,7 @@ data InputSemantic
     | SemNormal
     | SemVertex
     | SemTexCoord
-    deriving Show
+    deriving (Eq,Show)
 
 data Primitive
     = PrimTriangles String [Input] [Int]  -- material inputs indices
@@ -116,10 +116,16 @@ mainA = mainScene &&& (Map.unions .< X.multi objects) <<< X.hasName "COLLADA"
 infixr 1 .<
 (.<) = flip (X.>.)
 
+refAttr :: String -> LA.LA X.XmlTree ID
+refAttr name = stripHash ^<< X.getAttrValue0 name
+    where
+    stripHash ('#':x) = x
+    stripHash x = x
+
 objects = asum [ float_array, source, vertices, geometry, image, newparam, effect, material, node, visual_scene ]
 
 mainScene :: LA.LA X.XmlTree ID
-mainScene = X.getAttrValue0 "url" <<< child (X.hasName "instance_visual_scene") <<< child (X.hasName "scene")
+mainScene = refAttr "url" <<< child (X.hasName "instance_visual_scene") <<< child (X.hasName "scene")
 
 asum = foldr1 (X.<+>)
 
@@ -135,7 +141,7 @@ float_array = object "float_array" $ toArray ^<< X.getText . X.getChildren
     toArray = OFloatArray . map read . words
 
 accessor :: LA.LA X.XmlTree Accessor
-accessor = massage ^<< X.getAttrValue0 "source" &&& X.getAttrValue0 "count" &&& X.getAttrValue "stride" &&& X.getAttrValue "offset" <<< X.hasName "accessor"
+accessor = massage ^<< refAttr "source" &&& X.getAttrValue0 "count" &&& X.getAttrValue "stride" &&& X.getAttrValue "offset" <<< X.hasName "accessor"
     where
     massage (source, (count, (stride, offset))) = Accessor source (read count) (readDef 1 stride) (readDef 0 offset)
 
@@ -148,7 +154,7 @@ source :: LA.LA X.XmlTree Dict
 source = object "source" $ OSource ^<< accessor <<< X.getChildren <<< child (X.hasName "technique_common")
 
 input :: LA.LA X.XmlTree Input
-input = massage ^<< X.getAttrValue "offset" &&& X.getAttrValue0 "semantic" &&& X.getAttrValue0 "source" <<< X.hasName "input"
+input = massage ^<< X.getAttrValue "offset" &&& X.getAttrValue0 "semantic" &&& refAttr "source" <<< X.hasName "input"
     where
     massage (offset, (semantic, source)) = Input (readDef (-1) offset) (massageSemantic semantic) source -- -1 hax!!  See vertices where this is fixedup.
     massageSemantic "POSITION" = SemPosition
@@ -206,7 +212,7 @@ effect :: LA.LA X.XmlTree Dict
 effect = object "effect" $ OEffect ^<< child technique <<< child (X.hasName "profile_COMMON")
 
 material :: LA.LA X.XmlTree Dict
-material = object "material" $ OMaterial ^<< X.getAttrValue0 "url" <<< child (X.hasName "instance_effect")
+material = object "material" $ OMaterial ^<< refAttr "url" <<< child (X.hasName "instance_effect")
 
 nodeRef :: LA.LA X.XmlTree NodeRef
 nodeRef = asum [inline, instance_node] 
@@ -217,13 +223,13 @@ nodeRef = asum [inline, instance_node]
     convid (x, _)    = Left x
 
 instance_node :: LA.LA X.XmlTree NodeRef
-instance_node = NRInstance ^<< X.getAttrValue0 "url" <<< X.hasName "instance_node"
+instance_node = NRInstance ^<< refAttr "url" <<< X.hasName "instance_node"
 
 nodeInstance :: LA.LA X.XmlTree NodeInstance
 nodeInstance = asum [NINode ^<< nodeRef, instance_geometry]
 
 instance_geometry :: LA.LA X.XmlTree NodeInstance
-instance_geometry = uncurry NIGeometry ^<< X.getAttrValue0 "url" &&& bindings <<< X.hasName "instance_geometry"
+instance_geometry = uncurry NIGeometry ^<< refAttr "url" &&& bindings <<< X.hasName "instance_geometry"
     where
     bindings = id .< (child instance_material <<< child (X.hasName "technique_common") <<< child (X.hasName "bind_material"))
 
@@ -240,7 +246,7 @@ instance_material :: LA.LA X.XmlTree MaterialBinding
 instance_material = conv ^<< myAttrs &&& bindAttrs <<< X.hasName "instance_material"
     where
     conv ((symbol, target), (semantic, input_semantic)) = MaterialBinding symbol target semantic input_semantic
-    myAttrs = X.getAttrValue0 "symbol" &&& X.getAttrValue0 "target"
+    myAttrs = X.getAttrValue0 "symbol" &&& refAttr "target"
     bindAttrs = X.getAttrValue0 "semantic" &&& X.getAttrValue0 "input_semantic" <<< child (X.hasName "bind_vertex_input")
 
 visual_scene :: LA.LA X.XmlTree Dict
