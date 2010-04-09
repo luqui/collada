@@ -1,4 +1,12 @@
-module Graphics.Formats.Collada where
+module Graphics.Formats.Collada.Objects
+    ( Dict, ID
+    , Object(..), Matrix(..)
+    , Accessor(..), Input(..), InputSemantic(..), Primitive(..)
+    , Mesh(..), Parameter(..), Technique(..), LambertTechnique(..)
+    , ColorOrTexture(..), Node(..), NodeRef(..), NodeInstance(..)
+    , MaterialBinding(..), parseCollada
+    )
+where
 
 import Prelude hiding ((.), id)
 import qualified Text.XML.HXT.Arrow as X
