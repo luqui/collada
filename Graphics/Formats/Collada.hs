@@ -84,11 +84,11 @@ data Node
 data NodeInstance
     = NINode Node
     | NINodeInstance ID
-    | NIGeometry ID (Maybe MaterialBinding)
+    | NIGeometry ID [MaterialBinding]
     deriving Show
 
 data MaterialBinding
-    = MaterialBinding
+    = MaterialBinding String ID String String -- symbol target semantic input_semantic
     deriving Show
 
 main = putStrLn . intercalate ("\n------------------\n") . map show . LA.runLA (mainA . X.parseXmlDoc) =<< fmap ((,) "<stdin>") getContents
@@ -200,13 +200,24 @@ instance_node :: LA.LA X.XmlTree NodeInstance
 instance_node = NINodeInstance ^<< X.getAttrValue0 "url" <<< X.hasName "instance_node"
 
 instance_geometry :: LA.LA X.XmlTree NodeInstance
-instance_geometry = flip NIGeometry Nothing ^<< X.getAttrValue0 "url" <<< X.hasName "instance_geometry"
+instance_geometry = uncurry NIGeometry ^<< X.getAttrValue0 "url" &&& bindings <<< X.hasName "instance_geometry"
+    where
+    bindings = id .< (child instance_material <<< child (X.hasName "technique_common") <<< child (X.hasName "bind_material"))
 
 matrix :: LA.LA X.XmlTree Matrix
 matrix = Matrix . map read . words ^<< child X.getText <<< X.hasName "matrix"
 
 rawNode :: LA.LA X.XmlTree Node
-rawNode = uncurry Node ^<< child matrix &&& child (id .< nodeInstance) <<< X.hasName "node"
+rawNode = uncurry Node ^<< (child matrix `X.withDefault` identityMatrix) &&& (id .< child nodeInstance) <<< X.hasName "node"
 
 node :: LA.LA X.XmlTree Dict
 node = object "node" $ ONode ^<< rawNode
+
+instance_material :: LA.LA X.XmlTree MaterialBinding
+instance_material = conv ^<< myAttrs &&& bindAttrs <<< X.hasName "instance_material"
+    where
+    conv ((symbol, target), (semantic, input_semantic)) = MaterialBinding symbol target semantic input_semantic
+    myAttrs = X.getAttrValue0 "symbol" &&& X.getAttrValue0 "target"
+    bindAttrs = X.getAttrValue0 "semantic" &&& X.getAttrValue0 "input_semantic" <<< child (X.hasName "bind_vertex_input")
+
+
