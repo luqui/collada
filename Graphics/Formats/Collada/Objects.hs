@@ -48,7 +48,7 @@ identityMatrix = Matrix [ 1, 0, 0, 0
                         , 0, 0, 0, 1 ]
 
 data Accessor
-    = Accessor ID Int Int Int -- array count stride offset
+    = Accessor ID Int Int Int Int -- array components count stride offset
     deriving Show
 
 data Input
@@ -141,9 +141,9 @@ float_array = object "float_array" $ toArray ^<< X.getText . X.getChildren
     toArray = OFloatArray . map read . words
 
 accessor :: LA.LA X.XmlTree Accessor
-accessor = massage ^<< refAttr "source" &&& X.getAttrValue0 "count" &&& X.getAttrValue "stride" &&& X.getAttrValue "offset" <<< X.hasName "accessor"
+accessor = massage ^<< (length .< child (X.hasName "param")) &&& refAttr "source" &&& X.getAttrValue0 "count" &&& X.getAttrValue "stride" &&& X.getAttrValue "offset" <<< X.hasName "accessor"
     where
-    massage (source, (count, (stride, offset))) = Accessor source (read count) (readDef 1 stride) (readDef 0 offset)
+    massage (len, (source, (count, (stride, offset)))) = Accessor source len (read count) (readDef len stride) (readDef 0 offset)
 
 readDef d "" = d
 readDef _ s  = read s
