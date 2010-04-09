@@ -6,6 +6,7 @@ import qualified Text.XML.HXT.Arrow.ParserInterface as X
 import qualified Control.Arrow.ListArrow as LA
 import qualified Graphics.Rendering.OpenGL.GL as GL
 import qualified Data.Map as Map
+import Data.Maybe (listToMaybe)
 import Control.Category
 import Control.Arrow
 import Foreign.Ptr
@@ -16,7 +17,8 @@ type Dict = Map.Map ID Object
 type ID = String
 
 data Object
-    = OFloatArray [GL.GLfloat]
+    = OVisualScene [NodeRef]
+    | OFloatArray [GL.GLfloat]
     | OSource Accessor
     | OVertices [Input]
     | OGeometry Mesh
@@ -81,9 +83,13 @@ data Node
     = Node Matrix [NodeInstance]
     deriving Show
 
+data NodeRef
+    = NRNode Node
+    | NRInstance ID
+    deriving Show
+
 data NodeInstance
-    = NINode Node
-    | NINodeInstance ID
+    = NINode NodeRef
     | NIGeometry ID [MaterialBinding]
     deriving Show
 
@@ -91,15 +97,21 @@ data MaterialBinding
     = MaterialBinding String ID String String -- symbol target semantic input_semantic
     deriving Show
 
-main = putStrLn . intercalate ("\n------------------\n") . map show . LA.runLA (mainA . X.parseXmlDoc) =<< fmap ((,) "<stdin>") getContents
+main = print . parseCollada =<< getContents
 
---mainA :: LA.LA X.XmlTree Dict
-mainA = (Map.unions .< X.multi objects) <<< X.hasName "COLLADA"
+parseCollada :: String -> Maybe (ID, Dict)
+parseCollada = listToMaybe . LA.runLA (mainA <<< X.parseXmlDoc <<^ (\x -> ("<stdin>", x)))
+
+mainA :: LA.LA X.XmlTree (ID, Dict)
+mainA = mainScene &&& (Map.unions .< X.multi objects) <<< X.hasName "COLLADA"
 
 infixr 1 .<
 (.<) = flip (X.>.)
 
-objects = asum [ float_array, source, vertices, geometry, image, newparam, effect, material, node ]
+objects = asum [ float_array, source, vertices, geometry, image, newparam, effect, material, node, visual_scene ]
+
+mainScene :: LA.LA X.XmlTree ID
+mainScene = X.getAttrValue0 "url" <<< child (X.hasName "instance_visual_scene") <<< child (X.hasName "scene")
 
 asum = foldr1 (X.<+>)
 
@@ -188,16 +200,19 @@ effect = object "effect" $ OEffect ^<< child technique <<< child (X.hasName "pro
 material :: LA.LA X.XmlTree Dict
 material = object "material" $ OMaterial ^<< X.getAttrValue0 "url" <<< child (X.hasName "instance_effect")
 
-nodeInstance :: LA.LA X.XmlTree NodeInstance
-nodeInstance = asum [subnode, instance_geometry, instance_node]
+nodeRef :: LA.LA X.XmlTree NodeRef
+nodeRef = asum [inline, instance_node] 
     where
-    subnode = ((NINode ^<< rawNode) ||| arr NINodeInstance) <<< switch <<< X.hasName "node"
+    inline = (arr NRInstance ||| (NRNode ^<< rawNode)) <<< switch <<< X.hasName "node"
     switch = convid ^<< X.getAttrValue "id" &&& id
-    convid ("", xml) = Left xml
-    convid (x, _)   = Right x
+    convid ("", xml) = Right xml
+    convid (x, _)    = Left x
 
-instance_node :: LA.LA X.XmlTree NodeInstance
-instance_node = NINodeInstance ^<< X.getAttrValue0 "url" <<< X.hasName "instance_node"
+instance_node :: LA.LA X.XmlTree NodeRef
+instance_node = NRInstance ^<< X.getAttrValue0 "url" <<< X.hasName "instance_node"
+
+nodeInstance :: LA.LA X.XmlTree NodeInstance
+nodeInstance = asum [NINode ^<< nodeRef, instance_geometry]
 
 instance_geometry :: LA.LA X.XmlTree NodeInstance
 instance_geometry = uncurry NIGeometry ^<< X.getAttrValue0 "url" &&& bindings <<< X.hasName "instance_geometry"
@@ -220,4 +235,5 @@ instance_material = conv ^<< myAttrs &&& bindAttrs <<< X.hasName "instance_mater
     myAttrs = X.getAttrValue0 "symbol" &&& X.getAttrValue0 "target"
     bindAttrs = X.getAttrValue0 "semantic" &&& X.getAttrValue0 "input_semantic" <<< child (X.hasName "bind_vertex_input")
 
-
+visual_scene :: LA.LA X.XmlTree Dict
+visual_scene = object "visual_scene" $ OVisualScene ^<< id .< child nodeRef
