@@ -48,7 +48,7 @@ identityMatrix = Matrix [ 1, 0, 0, 0
                         , 0, 0, 0, 1 ]
 
 data Accessor
-    = Accessor ID Int Int Int -- count stride offset
+    = Accessor ID Int Int Int -- array count stride offset
     deriving Show
 
 data Input
