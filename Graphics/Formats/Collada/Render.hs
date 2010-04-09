@@ -88,8 +88,8 @@ compileInput (O.Input _ semantic source) = do
     where
     convertSem O.SemPosition = GL.VertexArray
     convertSem O.SemNormal   = GL.NormalArray
-    convertSem O.SemVertex   = GL.VertexArray  -- hmmm
     convertSem O.SemTexCoord = GL.TextureCoordArray
+    conversion sem = error $ "Unknown semantic: " ++ show sem
 
 compilePrimitive :: O.Primitive -> CompileM (DrawM ())
 compilePrimitive (O.PrimTriangles _material inputs indices) = do
@@ -109,7 +109,6 @@ compilePrimitive (O.PrimTriangles _material inputs indices) = do
             return . wrapDrawM (GL.renderPrimitive GL.Triangles) . forM_ (zip (cycle [0..maxE]) indices) $ \(inpix,ix) -> do
                 let inp = Map.findWithDefault mempty inpix compiled
                 ciIndex inp ix
-        _ -> return (return ())
             
             
 
