@@ -39,10 +39,8 @@ main = do
 
     print =<< GL.get GLUT.doubleBuffered
 
-    scaleRef <- newIORef 1
-
     GLUT.displayCallback GLUT.$= (do
-        GL.clearColor GL.$= GL.Color4 0.2 0 0 0
+        GL.clearColor GL.$= GL.Color4 0 0 0 0
         GL.clear [GL.ColorBuffer, GL.DepthBuffer]
         GL.preservingMatrix $ do
             GL.matrixMode GL.$= GL.Projection
@@ -51,18 +49,24 @@ main = do
             GL.matrixMode GL.$= GL.Modelview 0
             GL.loadIdentity
             GLU.lookAt (uncurry3 GL.Vertex3 eye) (uncurry3 GL.Vertex3 object) (uncurry3 GL.Vector3 up)
-            scale <- readIORef scaleRef
-            writeIORef scaleRef $! (scale + 0.001 :: GL.GLfloat)
-            GL.scale scale scale scale
+            GL.renderPrimitive GL.Lines $ do
+                vertex (-200) 0 0
+                vertex 200 0 0
+                vertex 0 (-200) 0
+                vertex 0 200 0
+                vertex 0 0 (-200)
+                vertex 0 0 200
             action
-        GLUT.swapBuffers
-        GLUT.postRedisplay Nothing)
+        GLUT.swapBuffers)
     GLUT.mainLoop
 
     where
-    eye = (120,200,120)
-    object = (120, 100, 0)
-    up = normalized $ (object ^-^ eye) `cross` ((object ^-^ eye) `cross` (0,1,0))
+    eye = (200, 200, 200)
+    object = (0, 0, 0)
+    up = normalized $ (object ^-^ eye) `cross` ((object ^-^ eye) `cross` (0,0,-1))
     cross (bx,by,bz) (cx,cy,cz) = (by*cz - cy*bz, bz*cx - bx*cz, bx*cy - by*cx)
 
     uncurry3 f (x,y,z) = f x y z
+
+    vertex :: GL.GLfloat -> GL.GLfloat -> GL.GLfloat -> IO ()
+    vertex x y z = GL.vertex $ GL.Vertex3 x y z
