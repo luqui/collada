@@ -14,11 +14,13 @@ import Data.Monoid (Monoid(..))
 import Control.Arrow (second)
 import Control.Applicative
 import Control.Monad.Trans.Reader
+import Control.Monad.Trans.State
 import Control.Monad.Trans
 import Control.Monad (when, forM_, liftM2, liftM3)
+import GHC.Prim (Any)
+import Unsafe.Coerce (unsafeCoerce)
 import qualified Codec.Image.STB as Image
 import qualified Data.Bitmap.OpenGL as Bitmap
-
 
 newtype DrawM a = DrawM { runDrawM :: IO a }
     deriving (Functor, Applicative, Monad, MonadIO)
@@ -28,8 +30,20 @@ wrapDrawM f = DrawM . f . runDrawM
 
 type Bindings = Map.Map String (DrawM ())
 
-newtype CompileM a = CompileM { runCompileM :: ReaderT (O.Dict, Bindings) IO a }
+type Cache = Map.Map O.ID Any
+
+newtype CompileM a = CompileM { runCompileM :: ReaderT (O.Dict, Bindings) (StateT Cache IO) a }
     deriving (Functor, Applicative, Monad, MonadIO)
+
+cached :: (O.Object -> CompileM a) -> (O.ID -> CompileM a)
+cached f ident = CompileM $ do
+    cache <- lift get
+    case Map.lookup ident cache of
+        Nothing -> do
+            result <- runCompileM $ f =<< findSymbol ident
+            lift . modify . Map.insert ident . unsafeCoerce $ result
+            return result
+        Just result -> return (unsafeCoerce result)
 
 lookup' :: (Ord k, Show k) => k -> Map.Map k a -> a
 lookup' k mp | Just x <- Map.lookup k mp = x
@@ -45,17 +59,19 @@ addBindings :: Bindings -> CompileM a -> CompileM a
 addBindings bindings = CompileM . local (second (Map.union bindings)) . runCompileM
 
 compile :: (O.ID, O.Dict) -> IO (IO ())
-compile (mainid, dict) = runDrawM <$> runReaderT (runCompileM (compileVisualScene =<< findSymbol mainid)) (dict, Map.empty)
+compile (mainid, dict) = runDrawM <$> evalStateT (runReaderT (runCompileM (compileVisualScene mainid)) (dict, Map.empty)) Map.empty
 
-compileArray :: O.Object -> CompileM (Ptr GL.GLfloat)
-compileArray (O.OFloatArray xs) = (liftIO $ Array.newArray xs)
-compileArray _ = error "Not an array"
+compileArray :: O.ID -> CompileM (Ptr GL.GLfloat)
+compileArray = cached go
+    where
+    go (O.OFloatArray xs) = liftIO $ Array.newArray xs
+    go _ = error "Not an array"
 
 floatSize = Storable.sizeOf (undefined :: GL.GLfloat)
 
 compileAccessor :: O.Accessor -> CompileM (GL.VertexArrayDescriptor GL.GLfloat)
 compileAccessor (O.Accessor arrayid components count stride offset) = do
-    ptr <- compileArray =<< findSymbol arrayid
+    ptr <- compileArray arrayid
     let ptr' = Array.advancePtr ptr offset
     return $ GL.VertexArrayDescriptor (fromIntegral components) GL.Float byteStride ptr'
     where
@@ -124,11 +140,13 @@ compilePrimitive (O.PrimTriangles material inputs indices) = do
                 ciIndex (Map.findWithDefault mempty inpix compiled) ix
             
 
-compileGeometry :: O.Object -> CompileM (DrawM ())
-compileGeometry (O.OGeometry (O.Mesh prims)) = do
-    cprims <- mapM compilePrimitive prims
-    return $ sequence_ cprims
-compileGeometry _ = error "Not a geometry"
+compileGeometry :: O.ID -> CompileM (DrawM ())
+compileGeometry = cached go
+    where
+    go (O.OGeometry (O.Mesh prims)) = do
+        cprims <- mapM compilePrimitive prims
+        return $ sequence_ cprims
+    go _ = error "Not a geometry"
 
 compileNode :: O.Node -> CompileM (DrawM ())
 compileNode (O.Node (O.Matrix matrix) instances) = do
@@ -140,52 +158,62 @@ compileNodeInstance :: O.NodeInstance -> CompileM (DrawM ())
 compileNodeInstance (O.NINode ref) = compileNodeRef ref
 compileNodeInstance (O.NIGeometry geom materials) = do
     materials' <- Map.unions <$> mapM compileMaterialBinding materials
-    addBindings materials' $ compileGeometry =<< findSymbol geom
+    addBindings materials' $ compileGeometry geom
 
 compileNodeRef :: O.NodeRef -> CompileM (DrawM ())
 compileNodeRef (O.NRNode node) = compileNode node
-compileNodeRef (O.NRInstance nodeid) = (compileNodeObject =<< findSymbol nodeid)
+compileNodeRef (O.NRInstance nodeid) = compileNodeObject nodeid
 
-compileNodeObject :: O.Object -> CompileM (DrawM ())
-compileNodeObject (O.ONode node) = compileNode node
-compileNodeObject _ = error "Not a node"
-
-compileVisualScene :: O.Object -> CompileM (DrawM ())
-compileVisualScene (O.OVisualScene noderefs) = do
-    sequence_ <$> mapM compileNodeRef noderefs
-compileVisualScene _ = error "Not a visual scene"
-
-compileImage :: O.Object -> CompileM GL.TextureObject
-compileImage (O.OImage path) = liftIO $ do
-    e <- Image.loadImage path
-    case e of
-        Left err -> fail err
-        Right bmp -> Bitmap.makeSimpleBitmapTexture bmp
-compileImage _ = error "not an image"
-
-compileEffect :: O.Object -> CompileM (DrawM ())
-compileEffect (O.OEffect (O.TechLambert cot)) = lambert cot
+compileNodeObject :: O.ID -> CompileM (DrawM ())
+compileNodeObject = cached go
     where
+    go (O.ONode node) = compileNode node
+    go _ = error "Not a node"
+
+compileVisualScene :: O.ID -> CompileM (DrawM ())
+compileVisualScene = cached go
+    where
+    go (O.OVisualScene noderefs) = do
+        sequence_ <$> mapM compileNodeRef noderefs
+    go _ = error "Not a visual scene"
+
+compileImage :: O.ID -> CompileM GL.TextureObject
+compileImage  = cached go
+    where
+    go (O.OImage path) = liftIO $ do
+        e <- Image.loadImage path
+        case e of
+            Left err -> fail err
+            Right bmp -> Bitmap.makeSimpleBitmapTexture bmp
+    go _ = error "not an image"
+
+compileEffect :: O.ID -> CompileM (DrawM ())
+compileEffect = cached go
+    where
+    go (O.OEffect (O.TechLambert cot)) = lambert cot
+    go (O.OEffect (O.TechConstant cot alpha)) = go (O.OEffect (O.TechLambert cot)) -- XXX Hax
+    go (O.OMaterial ident) = compileEffect ident
+    go x = error $ "Not an effect: " ++ show x
+    
     lambert (O.COTColor r g b a) = return . liftIO $ do
         GL.texture GL.Texture2D GL.$= GL.Disabled
         GL.colorMaterial GL.$= Just (GL.Front, GL.Diffuse)
         GL.color $ GL.Color4 r g b a
     lambert (O.COTTexture source _texcoord) = do
-        texobj <- compileParameter =<< findSymbol source
+        texobj <- compileParameter source
         return . liftIO $ do
             GL.colorMaterial GL.$= Just (GL.Front, GL.Diffuse)
             GL.texture GL.Texture2D GL.$= GL.Enabled
             GL.textureBinding GL.Texture2D GL.$= Just texobj
-compileEffect (O.OEffect (O.TechConstant cot alpha)) = compileEffect (O.OEffect (O.TechLambert cot)) -- XXX Hax
-compileEffect (O.OMaterial ident) = compileEffect =<< findSymbol ident
-compileEffect x = error $ "Not an effect: " ++ show x
 
-compileParameter :: O.Object -> CompileM GL.TextureObject
-compileParameter (O.OParam (O.ParamSurface2D img)) = compileImage =<< findSymbol img
-compileParameter (O.OParam (O.ParamSampler2D surf)) = compileParameter =<< findSymbol surf
-compileParameter _ = error "Not a param"
+compileParameter :: O.ID -> CompileM GL.TextureObject
+compileParameter = cached go
+    where
+    go (O.OParam (O.ParamSurface2D img)) = compileImage img
+    go (O.OParam (O.ParamSampler2D surf)) = compileParameter surf
+    go _ = error "Not a param"
 
 compileMaterialBinding :: O.MaterialBinding -> CompileM Bindings
 compileMaterialBinding (O.MaterialBinding sym target _ _) = do
-    targetE <- compileEffect =<< findSymbol target
+    targetE <- compileEffect target
     return $ Map.singleton sym targetE
