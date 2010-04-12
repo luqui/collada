@@ -33,7 +33,7 @@ data Object
     | OImage FilePath
     | OParam Parameter
     | OEffect Technique
-    | OMaterial ID -- instance effect
+    | OMaterial ID -- instance_effect
     | ONode Node
     deriving Show
 

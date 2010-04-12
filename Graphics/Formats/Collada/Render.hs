@@ -11,10 +11,14 @@ import qualified Foreign.Marshal.Array as Array
 import qualified Foreign.Storable as Storable
 import Foreign.Ptr (Ptr)
 import Data.Monoid (Monoid(..))
+import Control.Arrow (second)
 import Control.Applicative
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans
 import Control.Monad (when, forM_, liftM2, liftM3)
+import qualified Codec.Image.STB as Image
+import qualified Data.Bitmap.OpenGL as Bitmap
+
 
 newtype DrawM a = DrawM { runDrawM :: IO a }
     deriving (Functor, Applicative, Monad, MonadIO)
@@ -22,7 +26,9 @@ newtype DrawM a = DrawM { runDrawM :: IO a }
 wrapDrawM :: (IO a -> IO a) -> (DrawM a -> DrawM a)
 wrapDrawM f = DrawM . f . runDrawM
 
-newtype CompileM a = CompileM { runCompileM :: ReaderT O.Dict IO a }
+type Bindings = Map.Map String (DrawM ())
+
+newtype CompileM a = CompileM { runCompileM :: ReaderT (O.Dict, Bindings) IO a }
     deriving (Functor, Applicative, Monad, MonadIO)
 
 lookup' :: (Ord k, Show k) => k -> Map.Map k a -> a
@@ -30,10 +36,16 @@ lookup' k mp | Just x <- Map.lookup k mp = x
              | otherwise                 = error $ "Couldn't find object: " ++ show k
 
 findSymbol :: O.ID -> CompileM O.Object
-findSymbol = CompileM . asks . lookup'
+findSymbol sym = CompileM $ asks (lookup' sym . fst)
+
+findBinding :: String -> CompileM (DrawM ())
+findBinding sym = CompileM $ asks (lookup' sym . snd)
+
+addBindings :: Bindings -> CompileM a -> CompileM a
+addBindings bindings = CompileM . local (second (Map.union bindings)) . runCompileM
 
 compile :: (O.ID, O.Dict) -> IO (IO ())
-compile (mainid, dict) = runDrawM <$> runReaderT (runCompileM (compileVisualScene (lookup' mainid dict))) dict
+compile (mainid, dict) = runDrawM <$> runReaderT (runCompileM (compileVisualScene =<< findSymbol mainid)) (dict, Map.empty)
 
 compileArray :: O.Object -> CompileM (Ptr GL.GLfloat)
 compileArray (O.OFloatArray xs) = (liftIO $ Array.newArray xs)
@@ -92,7 +104,8 @@ compileInput (O.Input _ semantic source) = do
     conversion sem = error $ "Unknown semantic: " ++ show sem
 
 compilePrimitive :: O.Primitive -> CompileM (DrawM ())
-compilePrimitive (O.PrimTriangles _material inputs indices) = do
+compilePrimitive (O.PrimTriangles material inputs indices) = do
+    mat <- findBinding material
     case inputs of
         [inp] -> do  -- fast single-input
             compiled <- compileInput inp 
@@ -100,22 +113,22 @@ compilePrimitive (O.PrimTriangles _material inputs indices) = do
                 let numindices = fromIntegral (length indices)
                 ixarray :: Ptr GL.GLuint <- liftIO . Array.newArray $ map fromIntegral indices
                 return . wrapDrawM (GL.preservingClientAttrib [GL.AllClientAttributes]) $ do
+                    mat
                     ciSetupArrays compiled
                     liftIO $ GL.drawElements GL.Triangles numindices GL.UnsignedInt ixarray
         
         inps -> do   -- slow multi-input  (should copy to a new vertex array instead)
             compiled <- Map.fromListWith mappend <$> mapM (\inp@(O.Input i _ _) -> ((,) i) <$> compileInput inp) inps
             let (maxE,example) = Map.findMax compiled
-            return . wrapDrawM (GL.renderPrimitive GL.Triangles) . forM_ (zip (cycle [0..maxE]) indices) $ \(inpix,ix) -> do
-                let inp = Map.findWithDefault mempty inpix compiled
-                ciIndex inp ix
-            
+            return . (mat >>) . wrapDrawM (GL.renderPrimitive GL.Triangles) . forM_ (zip (cycle [0..maxE]) indices) $ \(inpix,ix) -> do
+                ciIndex (Map.findWithDefault mempty inpix compiled) ix
             
 
 compileGeometry :: O.Object -> CompileM (DrawM ())
 compileGeometry (O.OGeometry (O.Mesh prims)) = do
     cprims <- mapM compilePrimitive prims
     return $ sequence_ cprims
+compileGeometry _ = error "Not a geometry"
 
 compileNode :: O.Node -> CompileM (DrawM ())
 compileNode (O.Node (O.Matrix matrix) instances) = do
@@ -125,7 +138,9 @@ compileNode (O.Node (O.Matrix matrix) instances) = do
 
 compileNodeInstance :: O.NodeInstance -> CompileM (DrawM ())
 compileNodeInstance (O.NINode ref) = compileNodeRef ref
-compileNodeInstance (O.NIGeometry geom _materials) = (compileGeometry =<< findSymbol geom)
+compileNodeInstance (O.NIGeometry geom materials) = do
+    materials' <- Map.unions <$> mapM compileMaterialBinding materials
+    addBindings materials' $ compileGeometry =<< findSymbol geom
 
 compileNodeRef :: O.NodeRef -> CompileM (DrawM ())
 compileNodeRef (O.NRNode node) = compileNode node
@@ -138,3 +153,36 @@ compileNodeObject _ = error "Not a node"
 compileVisualScene :: O.Object -> CompileM (DrawM ())
 compileVisualScene (O.OVisualScene noderefs) = do
     sequence_ <$> mapM compileNodeRef noderefs
+compileVisualScene _ = error "Not a visual scene"
+
+compileImage :: O.Object -> CompileM GL.TextureObject
+compileImage (O.OImage path) = liftIO $ do
+    e <- Image.loadImage path
+    case e of
+        Left err -> fail err
+        Right bmp -> Bitmap.makeSimpleBitmapTexture bmp
+compileImage _ = error "not an image"
+
+compileEffect :: O.Object -> CompileM (DrawM ())
+compileEffect (O.OEffect (O.TechLambert (O.LambertTechnique cot))) = lambert cot
+    where
+    lambert (O.COTColor r g b a) = return . liftIO $ do
+        GL.texture GL.Texture2D GL.$= GL.Disabled
+        GL.color $ GL.Color4 r g b a
+    lambert (O.COTTexture source _texcoord) = do
+        texobj <- compileParameter =<< findSymbol source
+        return . liftIO $ do
+            GL.texture GL.Texture2D GL.$= GL.Enabled
+            GL.textureBinding GL.Texture2D GL.$= Just texobj
+compileEffect (O.OMaterial ident) = compileEffect =<< findSymbol ident
+compileEffect x = error $ "Not an effect: " ++ show x
+
+compileParameter :: O.Object -> CompileM GL.TextureObject
+compileParameter (O.OParam (O.ParamSurface2D img)) = compileImage =<< findSymbol img
+compileParameter (O.OParam (O.ParamSampler2D surf)) = compileParameter =<< findSymbol surf
+compileParameter _ = error "Not a param"
+
+compileMaterialBinding :: O.MaterialBinding -> CompileM Bindings
+compileMaterialBinding (O.MaterialBinding sym target _ _) = do
+    targetE <- compileEffect =<< findSymbol target
+    return $ Map.singleton sym targetE
