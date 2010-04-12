@@ -164,16 +164,19 @@ compileImage (O.OImage path) = liftIO $ do
 compileImage _ = error "not an image"
 
 compileEffect :: O.Object -> CompileM (DrawM ())
-compileEffect (O.OEffect (O.TechLambert (O.LambertTechnique cot))) = lambert cot
+compileEffect (O.OEffect (O.TechLambert cot)) = lambert cot
     where
     lambert (O.COTColor r g b a) = return . liftIO $ do
         GL.texture GL.Texture2D GL.$= GL.Disabled
+        GL.colorMaterial GL.$= Just (GL.Front, GL.Diffuse)
         GL.color $ GL.Color4 r g b a
     lambert (O.COTTexture source _texcoord) = do
         texobj <- compileParameter =<< findSymbol source
         return . liftIO $ do
+            GL.colorMaterial GL.$= Just (GL.Front, GL.Diffuse)
             GL.texture GL.Texture2D GL.$= GL.Enabled
             GL.textureBinding GL.Texture2D GL.$= Just texobj
+compileEffect (O.OEffect (O.TechConstant cot alpha)) = compileEffect (O.OEffect (O.TechLambert cot)) -- XXX Hax
 compileEffect (O.OMaterial ident) = compileEffect =<< findSymbol ident
 compileEffect x = error $ "Not an effect: " ++ show x
 

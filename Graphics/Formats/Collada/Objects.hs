@@ -2,7 +2,7 @@ module Graphics.Formats.Collada.Objects
     ( Dict, ID
     , Object(..), Matrix(..)
     , Accessor(..), Input(..), InputSemantic(..), Primitive(..)
-    , Mesh(..), Parameter(..), Technique(..), LambertTechnique(..)
+    , Mesh(..), Parameter(..), Technique(..)
     , ColorOrTexture(..), Node(..), NodeRef(..), NodeInstance(..)
     , MaterialBinding(..), parseCollada
     )
@@ -75,11 +75,8 @@ data Parameter
     deriving Show
 
 data Technique
-    = TechLambert LambertTechnique
-    deriving Show
-
-data LambertTechnique
-    = LambertTechnique ColorOrTexture -- diffuse
+    = TechLambert ColorOrTexture -- diffuse
+    | TechConstant ColorOrTexture GL.GLfloat -- transparent transparency
     deriving Show
 
 data ColorOrTexture
@@ -202,11 +199,14 @@ colorOrTexture = texture X.<+> color
     colorify [r,g,b,a] = COTColor r g b a
     colorify s = error "Malformed color"
 
-lambert :: LA.LA X.XmlTree LambertTechnique
-lambert = LambertTechnique ^<< child colorOrTexture <<< child (X.hasName "diffuse") <<< X.hasName "lambert"
+lambert :: LA.LA X.XmlTree Technique
+lambert = TechLambert ^<< child colorOrTexture <<< child (X.hasName "diffuse") <<< X.hasName "lambert"
+
+constant :: LA.LA X.XmlTree Technique
+constant = uncurry TechConstant ^<< (child colorOrTexture <<< child (X.hasName "transparent")) &&& (read ^<< child (X.getText) <<< child (X.hasName "float") <<< child (X.hasName "transparency")) <<< X.hasName "constant"
 
 technique :: LA.LA X.XmlTree Technique
-technique = asum [TechLambert ^<< lambert] <<< X.getChildren <<< X.hasName "technique"
+technique = asum [lambert, constant] <<< X.getChildren <<< X.hasName "technique"
 
 effect :: LA.LA X.XmlTree Dict
 effect = object "effect" $ OEffect ^<< child technique <<< child (X.hasName "profile_COMMON")
