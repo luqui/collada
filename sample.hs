@@ -1,10 +1,10 @@
 {-# LANGUAGE TypeFamilies #-}
 
-import qualified Graphics.Formats.Collada.Render as Collada
-import qualified Graphics.Formats.Collada.Objects as Collada
+import qualified Graphics.Formats.Collada as Collada
 import qualified Graphics.UI.GLUT as GLUT
 import qualified Graphics.Rendering.OpenGL.GL as GL
 import qualified Graphics.Rendering.OpenGL.GLU as GLU
+import System.IO
 import Control.Applicative
 import Data.VectorSpace
 import Data.IORef
@@ -22,13 +22,16 @@ instance InnerSpace GL.GLdouble where
     (<.>) = (*)
 
 main = do
+    hSetBuffering stdout NoBuffering
+
     GLUT.initialDisplayMode GL.$= [GLUT.RGBAMode, GLUT.DoubleBuffered, GLUT.WithDepthBuffer]
 
     GLUT.getArgsAndInitialize
     GLUT.createWindow "Hello!"
 
-    Just model <- Collada.parseCollada <$> getContents
-    action <- Collada.compile model
+    putStrLn "Loading"
+    action <- Collada.load Collada.defaultConfig =<< getContents
+    putStrLn "Done"
 
     GL.lighting GL.$= GL.Enabled
     GL.light (GL.Light 0) GL.$= GL.Enabled
@@ -36,8 +39,6 @@ main = do
     GL.depthFunc GL.$= Nothing
     GL.depthFunc GL.$= Just GL.Lequal
     GL.depthMask GL.$= GL.Enabled
-
-    print =<< GL.get GLUT.doubleBuffered
 
     GLUT.displayCallback GLUT.$= (do
         GL.clearColor GL.$= GL.Color4 0 0 0 0

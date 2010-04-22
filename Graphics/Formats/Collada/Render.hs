@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, ScopedTypeVariables, PatternGuards #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, ScopedTypeVariables, PatternGuards, RecursiveDo #-}
 
 module Graphics.Formats.Collada.Render 
     ( compile )
@@ -19,8 +19,6 @@ import Control.Monad.Trans
 import Control.Monad (when, forM_, liftM2, liftM3)
 import GHC.Prim (Any)
 import Unsafe.Coerce (unsafeCoerce)
-import qualified Codec.Image.STB as Image
-import qualified Data.Bitmap.OpenGL as Bitmap
 
 newtype DrawM a = DrawM { runDrawM :: IO a }
     deriving (Functor, Applicative, Monad, MonadIO)
@@ -32,16 +30,22 @@ type Bindings = Map.Map String (DrawM ())
 
 type Cache = Map.Map O.ID Any
 
-newtype CompileM a = CompileM { runCompileM :: ReaderT (O.Dict, Bindings) (StateT Cache IO) a }
+data CompileEnv = CompileEnv {
+    envDict :: O.Dict,
+    envBindings :: Bindings,
+    envLoader :: String -> IO GL.TextureObject
+}
+
+newtype CompileM a = CompileM { runCompileM :: ReaderT CompileEnv (StateT Cache IO) a }
     deriving (Functor, Applicative, Monad, MonadIO)
 
 cached :: (O.Object -> CompileM a) -> (O.ID -> CompileM a)
 cached f ident = CompileM $ do
     cache <- lift get
     case Map.lookup ident cache of
-        Nothing -> do
-            result <- runCompileM $ f =<< findSymbol ident
+        Nothing -> mdo
             lift . modify . Map.insert ident . unsafeCoerce $ result
+            result <- runCompileM $ f =<< findSymbol ident
             return result
         Just result -> return (unsafeCoerce result)
 
@@ -50,16 +54,24 @@ lookup' k mp | Just x <- Map.lookup k mp = x
              | otherwise                 = error $ "Couldn't find object: " ++ show k
 
 findSymbol :: O.ID -> CompileM O.Object
-findSymbol sym = CompileM $ asks (lookup' sym . fst)
+findSymbol sym = CompileM $ asks (lookup' sym . envDict)
 
 findBinding :: String -> CompileM (DrawM ())
-findBinding sym = CompileM $ asks (lookup' sym . snd)
+findBinding sym = CompileM $ asks (lookup' sym . envBindings)
 
 addBindings :: Bindings -> CompileM a -> CompileM a
-addBindings bindings = CompileM . local (second (Map.union bindings)) . runCompileM
+addBindings bindings = CompileM . local addBinding . runCompileM
+    where
+    addBinding env = env { envBindings = envBindings env `Map.union` bindings }
 
-compile :: (O.ID, O.Dict) -> IO (IO ())
-compile (mainid, dict) = runDrawM <$> evalStateT (runReaderT (runCompileM (compileVisualScene mainid)) (dict, Map.empty)) Map.empty
+loadTexture :: String -> CompileM GL.TextureObject
+loadTexture s = CompileM $ liftIO . ($ s) =<< asks envLoader
+
+compile :: O.Dict -> (String -> IO (GL.TextureObject)) -> O.ID -> IO (IO ())
+compile dict loader mainid = do
+    runDrawM <$> evalStateT (runReaderT (runCompileM (compileVisualScene mainid)) initEnv) Map.empty
+    where
+    initEnv = CompileEnv { envDict = dict, envBindings = Map.empty, envLoader = loader }
 
 compileArray :: O.ID -> CompileM (Ptr GL.GLfloat)
 compileArray = cached go
@@ -178,13 +190,9 @@ compileVisualScene = cached go
     go _ = error "Not a visual scene"
 
 compileImage :: O.ID -> CompileM GL.TextureObject
-compileImage  = cached go
+compileImage = cached go
     where
-    go (O.OImage path) = liftIO $ do
-        e <- Image.loadImage path
-        case e of
-            Left err -> fail err
-            Right bmp -> Bitmap.makeSimpleBitmapTexture bmp
+    go (O.OImage path) = loadTexture path
     go _ = error "not an image"
 
 compileEffect :: O.ID -> CompileM (DrawM ())

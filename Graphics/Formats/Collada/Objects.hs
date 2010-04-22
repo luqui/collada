@@ -102,8 +102,6 @@ data MaterialBinding
     = MaterialBinding String ID String String -- symbol target semantic input_semantic
     deriving Show
 
-main = print . parseCollada =<< getContents
-
 parseCollada :: String -> Maybe (ID, Dict)
 parseCollada = listToMaybe . LA.runLA (mainA <<< X.parseXmlDoc <<^ (\x -> ("<stdin>", x)))
 
