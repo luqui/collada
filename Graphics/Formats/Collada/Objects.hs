@@ -1,6 +1,6 @@
 module Graphics.Formats.Collada.Objects
     ( Dict, ID
-    , Object(..), Matrix(..)
+    , Model(..), Object(..), Matrix(..)
     , Accessor(..), Input(..), InputSemantic(..), Primitive(..)
     , Mesh(..), Parameter(..), Technique(..)
     , ColorOrTexture(..), Node(..), NodeRef(..), NodeInstance(..)
@@ -23,6 +23,12 @@ import Data.List
 
 type Dict = Map.Map ID Object
 type ID = String
+
+data Model
+    = Model { modelScale :: GL.GLfloat
+            , modelScene :: ID
+            , modelDict :: Dict
+            }
 
 data Object
     = OVisualScene [NodeRef]
@@ -102,11 +108,16 @@ data MaterialBinding
     = MaterialBinding String ID String String -- symbol target semantic input_semantic
     deriving Show
 
-parseCollada :: String -> Maybe (ID, Dict)
+parseCollada :: String -> Maybe Model
 parseCollada = listToMaybe . LA.runLA (mainA <<< X.parseXmlDoc <<^ (\x -> ("<stdin>", x)))
 
-mainA :: LA.LA X.XmlTree (ID, Dict)
-mainA = mainScene &&& (Map.unions .< X.multi objects) <<< X.hasName "COLLADA"
+mainA :: LA.LA X.XmlTree Model
+mainA = massage ^<< mainScale &&& mainScene &&& (Map.unions .< X.multi objects) <<< X.hasName "COLLADA"
+    where
+    massage (x,(y,z)) = Model x y z
+
+mainScale :: LA.LA X.XmlTree GL.GLfloat
+mainScale = read ^<< X.getAttrValue0 "meter" <<< child (X.hasName "unit") <<< child (X.hasName "asset")
 
 infixr 1 .<
 (.<) = flip (X.>.)

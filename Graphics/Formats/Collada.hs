@@ -16,7 +16,7 @@ load :: Config -> String -> IO (IO ())
 load config contents = do
     case parseCollada contents of
         Nothing -> fail "Parse error"
-        Just (mainid, dict) -> compile dict (textureLoader config) mainid
+        Just model -> compile (textureLoader config) model
 
 defaultConfig :: Config
 defaultConfig = Config {

@@ -33,21 +33,24 @@ main = do
     action <- Collada.load Collada.defaultConfig =<< getContents
     putStrLn "Done"
 
+    GL.matrixMode GL.$= GL.Projection
+    GL.loadIdentity
+    GLU.perspective 45 1 1 1000
+    GL.matrixMode GL.$= GL.Modelview 0
+    GL.loadIdentity
+
     GL.lighting GL.$= GL.Enabled
     GL.light (GL.Light 0) GL.$= GL.Enabled
-    GL.position (GL.Light 0) GL.$= GL.Vertex4 0 0 0 1
+    GL.position (GL.Light 0) GL.$= GL.Vertex4 0 0 10 1
     GL.depthFunc GL.$= Nothing
     GL.depthFunc GL.$= Just GL.Lequal
     GL.depthMask GL.$= GL.Enabled
+    GL.normalize GL.$= GL.Enabled
 
     GLUT.displayCallback GLUT.$= (do
         GL.clearColor GL.$= GL.Color4 0 0 0 0
         GL.clear [GL.ColorBuffer, GL.DepthBuffer]
         GL.preservingMatrix $ do
-            GL.matrixMode GL.$= GL.Projection
-            GL.loadIdentity
-            GLU.perspective 45 1 1 10000
-            GL.matrixMode GL.$= GL.Modelview 0
             GL.loadIdentity
             GLU.lookAt (uncurry3 GL.Vertex3 eye) (uncurry3 GL.Vertex3 object) (uncurry3 GL.Vector3 up)
             GL.renderPrimitive GL.Lines $ do
@@ -62,7 +65,7 @@ main = do
     GLUT.mainLoop
 
     where
-    eye = (200, 200, 200)
+    eye = (10, 10, 10)
     object = (0, 0, 0)
     up = normalized $ (object ^-^ eye) `cross` ((object ^-^ eye) `cross` (0,0,-1))
     cross (bx,by,bz) (cx,cy,cz) = (by*cz - cy*bz, bz*cx - bx*cz, bx*cy - by*cx)

@@ -67,11 +67,15 @@ addBindings bindings = CompileM . local addBinding . runCompileM
 loadTexture :: String -> CompileM GL.TextureObject
 loadTexture s = CompileM $ liftIO . ($ s) =<< asks envLoader
 
-compile :: O.Dict -> (String -> IO (GL.TextureObject)) -> O.ID -> IO (IO ())
-compile dict loader mainid = do
-    runDrawM <$> evalStateT (runReaderT (runCompileM (compileVisualScene mainid)) initEnv) Map.empty
+compile :: (String -> IO (GL.TextureObject)) -> O.Model -> IO (IO ())
+compile loader model = do
+    scale . runDrawM <$> evalStateT (runReaderT (runCompileM (compileVisualScene (O.modelScene model))) initEnv) Map.empty
     where
-    initEnv = CompileEnv { envDict = dict, envBindings = Map.empty, envLoader = loader }
+    initEnv = CompileEnv { envDict = O.modelDict model, envBindings = Map.empty, envLoader = loader }
+
+    scale action = GL.preservingMatrix $ do
+        let s = O.modelScale model in GL.scale s s s
+        action
 
 compileArray :: O.ID -> CompileM (Ptr GL.GLfloat)
 compileArray = cached go
