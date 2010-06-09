@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, ScopedTypeVariables, PatternGuards, RecursiveDo #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, ScopedTypeVariables, PatternGuards, DoRec #-}
 
 module Graphics.Formats.Collada.Render 
     ( compile )
@@ -15,7 +15,8 @@ import Control.Arrow (second)
 import Control.Applicative
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.State
-import Control.Monad.Trans
+import Control.Monad.Trans.Class
+import Control.Monad.IO.Class
 import Control.Monad (when, forM_, liftM2, liftM3)
 import GHC.Prim (Any)
 import Unsafe.Coerce (unsafeCoerce)
@@ -43,10 +44,11 @@ cached :: (O.Object -> CompileM a) -> (O.ID -> CompileM a)
 cached f ident = CompileM $ do
     cache <- lift get
     case Map.lookup ident cache of
-        Nothing -> mdo
-            lift . modify . Map.insert ident . unsafeCoerce $ result
-            result <- runCompileM $ f =<< findSymbol ident
-            return result
+        Nothing -> do
+                rec
+                    lift . modify . Map.insert ident . unsafeCoerce $ result
+                    result <- runCompileM $ f =<< findSymbol ident
+                return result
         Just result -> return (unsafeCoerce result)
 
 lookup' :: (Ord k, Show k) => k -> Map.Map k a -> a
