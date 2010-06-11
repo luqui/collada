@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, ScopedTypeVariables, PatternGuards, DoRec #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, ScopedTypeVariables, PatternGuards, DoRec, DeriveDataTypeable #-}
 
 module Graphics.Formats.Collada.Render 
     ( compile )
@@ -18,18 +18,20 @@ import Control.Monad.Trans.State
 import Control.Monad.Trans.Class
 import Control.Monad.IO.Class
 import Control.Monad (when, forM_, liftM2, liftM3)
-import GHC.Prim (Any)
-import Unsafe.Coerce (unsafeCoerce)
+import Data.Dynamic
 
 newtype DrawM a = DrawM { runDrawM :: IO a }
-    deriving (Functor, Applicative, Monad, MonadIO)
+    deriving (Functor, Applicative, Monad, MonadIO, Typeable)
+
+newtype GLTexObj = GLTexObj { getGLTexObj :: GL.TextureObject }  -- typeable wrapper
+    deriving (Typeable)
 
 wrapDrawM :: (IO a -> IO a) -> (DrawM a -> DrawM a)
 wrapDrawM f = DrawM . f . runDrawM
 
 type Bindings = Map.Map String (DrawM ())
 
-type Cache = Map.Map O.ID Any
+type Cache = Map.Map O.ID Dynamic
 
 data CompileEnv = CompileEnv {
     envDict :: O.Dict,
@@ -40,26 +42,26 @@ data CompileEnv = CompileEnv {
 newtype CompileM a = CompileM { runCompileM :: ReaderT CompileEnv (StateT Cache IO) a }
     deriving (Functor, Applicative, Monad, MonadIO)
 
-cached :: (O.Object -> CompileM a) -> (O.ID -> CompileM a)
+cached :: (Typeable a) => (O.Object -> CompileM a) -> (O.ID -> CompileM a)
 cached f ident = CompileM $ do
     cache <- lift get
     case Map.lookup ident cache of
         Nothing -> do
                 rec
-                    lift . modify . Map.insert ident . unsafeCoerce $ result
+                    lift . modify . Map.insert ident . toDyn $ result
                     result <- runCompileM $ f =<< findSymbol ident
                 return result
-        Just result -> return (unsafeCoerce result)
+        Just result -> maybe (fail "Cache type mismatch") return $ fromDynamic result
 
-lookup' :: (Ord k, Show k) => k -> Map.Map k a -> a
-lookup' k mp | Just x <- Map.lookup k mp = x
-             | otherwise                 = error $ "Couldn't find object: " ++ show k
+lookup' :: (Ord k, Show k, Monad m) => k -> Map.Map k a -> m a
+lookup' k mp | Just x <- Map.lookup k mp = return x
+             | otherwise                 = fail $ "Couldn't find object: " ++ show k
 
 findSymbol :: O.ID -> CompileM O.Object
-findSymbol sym = CompileM $ asks (lookup' sym . envDict)
+findSymbol sym = CompileM $ lookup' sym =<< asks envDict
 
 findBinding :: String -> CompileM (DrawM ())
-findBinding sym = CompileM $ asks (lookup' sym . envBindings)
+findBinding sym = CompileM $ lookup' sym =<< asks envBindings
 
 addBindings :: Bindings -> CompileM a -> CompileM a
 addBindings bindings = CompileM . local addBinding . runCompileM
@@ -83,7 +85,7 @@ compileArray :: O.ID -> CompileM (Ptr GL.GLfloat)
 compileArray = cached go
     where
     go (O.OFloatArray xs) = liftIO $ Array.newArray xs
-    go _ = error "Not an array"
+    go _ = fail "Not an array"
 
 floatSize = Storable.sizeOf (undefined :: GL.GLfloat)
 
@@ -117,7 +119,7 @@ compileInput (O.Input _ semantic source) = do
         O.OVertices inputs -> mconcat <$> mapM compileInput inputs
         O.OSource acc -> do
             descriptor <- compileAccessor acc
-            let sem = convertSem semantic
+            sem <- convertSem semantic
             let setupArrays = liftIO $ do
                     GL.arrayPointer sem GL.$= descriptor
                     GL.clientState sem GL.$= GL.Enabled
@@ -126,16 +128,16 @@ compileInput (O.Input _ semantic source) = do
                             GL.VertexArray -> \z -> liftIO $ GL.vertex =<< liftM3 GL.Vertex3 (ind z 0) (ind z 1) (ind z 2)
                             GL.NormalArray -> \z -> liftIO $ GL.normal =<< liftM3 GL.Normal3 (ind z 0) (ind z 1) (ind z 2)
                             GL.TextureCoordArray -> \z -> liftIO $ GL.texCoord =<< liftM2 GL.TexCoord2 (ind z 0) (ind z 1)
-                            x -> error $ "Don't know how to index a " ++ show x
+                            x -> fail $ "Don't know how to index a " ++ show x
             return $ CompiledInput setupArrays index
             
                     
-        x -> error $ "Input can't use " ++ show x ++ " as a source"
+        x -> fail $ "Input can't use " ++ show x ++ " as a source"
     where
-    convertSem O.SemPosition = GL.VertexArray
-    convertSem O.SemNormal   = GL.NormalArray
-    convertSem O.SemTexCoord = GL.TextureCoordArray
-    conversion sem = error $ "Unknown semantic: " ++ show sem
+    convertSem O.SemPosition = return GL.VertexArray
+    convertSem O.SemNormal   = return GL.NormalArray
+    convertSem O.SemTexCoord = return GL.TextureCoordArray
+    convertSem sem = fail $ "Unknown semantic: " ++ show sem
 
 compilePrimitive :: O.Primitive -> CompileM (DrawM ())
 compilePrimitive (O.PrimTriangles material inputs indices) = do
@@ -164,7 +166,7 @@ compileGeometry = cached go
     go (O.OGeometry (O.Mesh prims)) = do
         cprims <- mapM compilePrimitive prims
         return $ sequence_ cprims
-    go _ = error "Not a geometry"
+    go _ = fail "Not a geometry"
 
 compileNode :: O.Node -> CompileM (DrawM ())
 compileNode (O.Node (O.Matrix matrix) instances) = do
@@ -186,20 +188,20 @@ compileNodeObject :: O.ID -> CompileM (DrawM ())
 compileNodeObject = cached go
     where
     go (O.ONode node) = compileNode node
-    go _ = error "Not a node"
+    go _ = fail "Not a node"
 
 compileVisualScene :: O.ID -> CompileM (DrawM ())
 compileVisualScene = cached go
     where
     go (O.OVisualScene noderefs) = do
         sequence_ <$> mapM compileNodeRef noderefs
-    go _ = error "Not a visual scene"
+    go _ = fail "Not a visual scene"
 
-compileImage :: O.ID -> CompileM GL.TextureObject
+compileImage :: O.ID -> CompileM GLTexObj
 compileImage = cached go
     where
-    go (O.OImage path) = loadTexture path
-    go _ = error "not an image"
+    go (O.OImage path) = GLTexObj <$> loadTexture path
+    go _ = fail "not an image"
 
 compileEffect :: O.ID -> CompileM (DrawM ())
 compileEffect = cached go
@@ -207,7 +209,7 @@ compileEffect = cached go
     go (O.OEffect (O.TechLambert cot)) = lambert cot
     go (O.OEffect (O.TechConstant cot alpha)) = go (O.OEffect (O.TechLambert cot)) -- XXX Hax
     go (O.OMaterial ident) = compileEffect ident
-    go x = error $ "Not an effect: " ++ show x
+    go x = fail $ "Not an effect: " ++ show x
     
     lambert (O.COTColor r g b a) = return . liftIO $ do
         GL.texture GL.Texture2D GL.$= GL.Disabled
@@ -218,14 +220,14 @@ compileEffect = cached go
         return . liftIO $ do
             GL.colorMaterial GL.$= Just (GL.Front, GL.Diffuse)
             GL.texture GL.Texture2D GL.$= GL.Enabled
-            GL.textureBinding GL.Texture2D GL.$= Just texobj
+            GL.textureBinding GL.Texture2D GL.$= Just (getGLTexObj texobj)
 
-compileParameter :: O.ID -> CompileM GL.TextureObject
+compileParameter :: O.ID -> CompileM GLTexObj
 compileParameter = cached go
     where
     go (O.OParam (O.ParamSurface2D img)) = compileImage img
     go (O.OParam (O.ParamSampler2D surf)) = compileParameter surf
-    go _ = error "Not a param"
+    go _ = fail "Not a param"
 
 compileMaterialBinding :: O.MaterialBinding -> CompileM Bindings
 compileMaterialBinding (O.MaterialBinding sym target _ _) = do
