@@ -12,6 +12,9 @@ data Config = Config {
     textureLoader :: String -> IO GL.TextureObject
 }
 
+-- | Loads a COLLADA file from a file\'s contents (not the filename) and 
+-- returns an action that draws the model.  This will throw an IO exception
+-- if anything went wrong during the process.
 load :: Config -> String -> IO (IO ())
 load config contents = do
     case parseCollada contents of

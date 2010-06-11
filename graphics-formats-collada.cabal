@@ -7,15 +7,15 @@ Name:                graphics-formats-collada
 -- The package version. See the Haskell package versioning policy
 -- (http://www.haskell.org/haskellwiki/Package_versioning_policy) for
 -- standards guiding when and how versions should be incremented.
-Version:             0.3.0
+Version:             0.3.1
 
 -- A short (one-line) description of the package.
 Synopsis:            Load 3D geometry in the COLLADA format
 
 -- A longer description of the package.
 Description:
-    Early in development.  Should be able to load anything that Google SketchUp
-    produces -- other than that, all bets are off.
+    Should be able to load anything that Google SketchUp produces --
+    other than that, all bets are off.
 
 -- URL for the project homepage or repository.
 Homepage:            http://github.com/luqui/collada
@@ -61,7 +61,6 @@ Library
     containers,
     transformers == 0.2.*,
     hxt == 8.5.*,
-    ghc-prim == 0.2.*,
     OpenGL == 2.4.*, 
     stb-image == 0.2.*,
     bitmap-opengl == 0.0.*
